@@ -1,7 +1,7 @@
 /* Glamis Staff Help: unlocks the encrypted content bundle and renders it. */
 (function () {
   'use strict';
-  var VER = 'fe3ca6295f';
+  var VER = 'cff5125be1';
   var K_KEY = 'gdrh.k', K_SALT = 'gdrh.s', K_LANG = 'gdrh.lang', K_CL = 'gdrh.cl.', K_NAME = 'gdrh.name', K_Q = 'gdrh.q';
   var GROUPS = ['checklist', 'handbook', 'howto', 'quickref'];
 
@@ -365,7 +365,7 @@
   }
 
   /* ---------- staff log: page feedback and submitted checklists ----------
-     Each one is posted to a Google Form (DATA.log = { url, f: form field names }) and lands as a row in its Google Sheet.
+     Each one is posted to the staff-log function (DATA.log = { url, k: its key }) and lands as a row in gdr.staff_log (Supabase).
      Rows are always in English (titles and labels from the English page) so they sort and filter the same.
      No signal? It waits in localStorage (gdrh.q) and goes out on the next start or when the device is back online. */
   function nowPT() {
@@ -376,11 +376,13 @@
   function qset(q) { try { if (q.length) localStorage.setItem(K_Q, JSON.stringify(q)); else localStorage.removeItem(K_Q); return true; } catch (e) { return false; } }
   function postLog(d) {
     var L = DATA && DATA.log; if (!L || !window.fetch) return Promise.reject(new Error('no log'));
-    var body = new URLSearchParams();
-    Object.keys(L.f).forEach(function (k) { if (d[k]) body.append(L.f[k], String(d[k])); });
     var ac = window.AbortController ? new AbortController() : null, timer = ac && setTimeout(function () { ac.abort(); }, 20000);
-    return fetch(L.url, { method: 'POST', mode: 'no-cors', credentials: 'omit', referrerPolicy: 'no-referrer', body: body, signal: ac ? ac.signal : undefined })
-      .then(function (r) { clearTimeout(timer); return r; }, function (e) { clearTimeout(timer); throw e; });
+    var body = { id: d.id, type: d.type, name: d.name, page: d.page, section: d.section, booking: d.booking, details: d.details, lang: d.lang, at: d.at };
+    return fetch(L.url, { method: 'POST', credentials: 'omit', referrerPolicy: 'no-referrer', signal: ac ? ac.signal : undefined,
+      headers: { 'Content-Type': 'application/json', 'x-log-key': L.k }, body: JSON.stringify(body) })
+      .then(function (r) { clearTimeout(timer); return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok || !j.ok) throw new Error('log ' + (j.error || r.status)); return r; }); },
+        function (e) { clearTimeout(timer); throw e; });
   }
   function logSend(d) {
     d.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
