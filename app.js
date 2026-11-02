@@ -1,7 +1,7 @@
 /* Glamis Staff Help: unlocks the encrypted content bundle and renders it. */
 (function () {
   'use strict';
-  var VER = 'bc18bd7378';
+  var VER = 'fe3ca6295f';
   var K_KEY = 'gdrh.k', K_SALT = 'gdrh.s', K_LANG = 'gdrh.lang', K_CL = 'gdrh.cl.', K_NAME = 'gdrh.name', K_Q = 'gdrh.q';
   var GROUPS = ['checklist', 'handbook', 'howto', 'quickref'];
 
@@ -460,10 +460,10 @@
     return Promise.resolve(false);
   }
 
-  /* ---------- content drop: photos and videos straight to Google Drive ----------
-     DATA.drop = { url: the Apps Script web app (/exec), t: its token, chunk: bytes per piece }.
-     For each file the web app starts a resumable Drive upload in today's folder and returns the session URL;
-     the file then goes from the phone to Drive in pieces, and picks up where it stopped after a dropped signal.
+  /* ---------- content drop: photos and videos straight to the company's R2 storage ----------
+     DATA.drop = { url: the content drop Worker (https://drop.glamisrent.com), t: its token }.
+     For each file the Worker starts an R2 multipart upload in today's folder; the file then goes from the phone in
+     5 MiB pieces, and picks up where it stopped after a dropped signal (pieces already sent are kept).
      The state lives here, not in the page, so an upload keeps going if you open another page and shows again when you come back. */
   var DROP = { items: [], running: false, box: null, slug: '', note: '', msg: '', bad: false, wl: null, who: '' };
   var MAXB = 5 * 1024 * 1024 * 1024;
@@ -575,65 +575,64 @@
         failed.length ? ["Didn't upload: " + failed.length].concat(failed.map(function (x) { return '- ' + x.file.name + ' (' + fmtSize(x.file.size) + ')'; })) : [],
         DROP.note ? ['Note: ' + DROP.note] : []).join('\n');
   }
-  // One PUT to the Drive upload session. A piece of the file, or blob = null to ask how much Drive already has.
-  function drivePut(url, blob, range, onprog) {
+  // A JSON call to the content drop Worker.
+  function dropCall(D, path, body) {
+    var ac = window.AbortController ? new AbortController() : null, timer = ac && setTimeout(function () { ac.abort(); }, 60000);
+    return fetch(D.url + path, { method: 'POST', credentials: 'omit', referrerPolicy: 'no-referrer', signal: ac ? ac.signal : undefined,
+      headers: { 'Content-Type': 'application/json', 'X-Drop-Token': D.t }, body: JSON.stringify(body) })
+      .then(function (r) { clearTimeout(timer); return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok || !j.ok) { var e = new Error(path.slice(1) + ' ' + (j.error || ('http ' + r.status))); e.gone = /does not exist|NoSuchUpload/i.test(j.error || ''); throw e; }
+        return j; }); });
+  }
+  // One piece of a file, with upload progress.
+  function dropPut(url, token, blob, onprog) {
     return new Promise(function (res, rej) {
       var x = new XMLHttpRequest();
       x.open('PUT', url, true);
-      x.setRequestHeader('Content-Range', range);
+      x.setRequestHeader('X-Drop-Token', token);
       x.timeout = 300000;
       if (onprog && x.upload) x.upload.onprogress = function (e) { onprog(e.loaded); };
-      x.onload = function () { res({ status: x.status, range: x.getResponseHeader('Range') }); };
+      x.onload = function () { var j = {}; try { j = JSON.parse(x.responseText); } catch (e) {} res({ status: x.status, j: j }); };
       x.onerror = x.ontimeout = x.onabort = function () { rej(new Error('network')); };
       x.send(blob);
     });
   }
   function sendFile(it, D) {
-    var f = it.file, size = f.size, CH = D.chunk || 4194304, tries = 0, restarts = 0, stuck = 0;
-    function got(r) { var m = /bytes=0-(\d+)/.exec(r.range || ''); return m ? +m[1] + 1 : 0; }
+    var f = it.file, size = f.size, tries = 0, restarts = 0;
     function start() {
       it.dname = stampPT() + ' ' + DROP.who + ' - ' + f.name;
-      var ac = window.AbortController ? new AbortController() : null, timer = ac && setTimeout(function () { ac.abort(); }, 60000);
-      return fetch(D.url, { method: 'POST', credentials: 'omit', referrerPolicy: 'no-referrer', signal: ac ? ac.signal : undefined,
-        body: JSON.stringify({ token: D.t, name: it.dname, type: mimeOf(f), size: size, origin: location.origin,
-          description: (DROP.note ? DROP.note + '\n\n' : '') + 'Sent by ' + DROP.who + ' from the Glamis Staff Help site.' }) })
-        .then(function (r) { clearTimeout(timer); if (!r.ok) throw new Error('start http ' + r.status); return r.json(); })
-        .then(function (j) { if (!j || !j.ok || !j.url) throw new Error('start ' + (j && j.error)); it.sess = j.url; it.folder = j.folder || ''; it.off = it.prog = 0; });
+      return dropCall(D, '/start', { name: it.dname, file: f.name, type: mimeOf(f), size: size, who: DROP.who,
+        note: (DROP.note ? DROP.note + '\n\n' : '') + 'Sent by ' + DROP.who + ' from the Glamis Staff Help site.' })
+        .then(function (j) { it.key = j.key; it.uid = j.uploadId; it.ps = j.part; it.folder = j.folder || ''; it.parts = []; it.off = it.prog = 0; });
+    }
+    function restart(e) {
+      if (++restarts > 2) throw e;
+      it.uid = null; it.parts = []; it.off = it.prog = 0; return step();
     }
     function step() {
       if (it.complete) return Promise.resolve();
-      if (!it.sess) return start().then(step);
-      var end = Math.min(it.off + CH, size);
-      return drivePut(it.sess, f.slice(it.off, end), 'bytes ' + it.off + '-' + (end - 1) + '/' + size, function (n) { it.prog = it.off + n; drawItem(it); })
+      if (!it.uid) return start().then(step);
+      var n = it.parts.length + 1, off = (n - 1) * it.ps;
+      if (off >= size) return dropCall(D, '/complete', { key: it.key, uploadId: it.uid, parts: it.parts })
+        .then(function () { it.complete = true; it.off = it.prog = size; }, function (e) { if (e.gone) return restart(e); throw e; });
+      var end = Math.min(off + it.ps, size);
+      return dropPut(D.url + '/part?key=' + encodeURIComponent(it.key) + '&uploadId=' + encodeURIComponent(it.uid) + '&n=' + n, D.t,
+        f.slice(off, end), function (x) { it.prog = off + x; drawItem(it); })
         .then(function (r) {
-          if (r.status === 200 || r.status === 201) { it.complete = true; it.off = it.prog = size; return; }
-          if (r.status === 308) {
-            var off = got(r); stuck = off > it.off ? 0 : stuck + 1;
-            if (stuck > 3) throw new Error('no progress');
-            it.off = it.prog = off; tries = 0; drawItem(it); return step();
-          }
-          if (r.status === 404 || r.status === 410) {
-            if (++restarts > 2) throw new Error('session ' + r.status);
-            it.sess = null; it.off = it.prog = 0; return step();
-          }
-          throw new Error('http ' + r.status);
+          if (r.status === 200 && r.j && r.j.ok && r.j.etag) { it.parts.push({ n: n, etag: r.j.etag }); it.off = it.prog = end; tries = 0; drawItem(it); return step(); }
+          var e = new Error('part ' + ((r.j && r.j.error) || ('http ' + r.status)));
+          if (/does not exist|NoSuchUpload/i.test((r.j && r.j.error) || '')) return restart(e);
+          throw e;
         });
-    }
-    function resync() {
-      if (!it.sess || it.complete) return Promise.resolve();
-      return drivePut(it.sess, null, 'bytes */' + size).then(function (r) {
-        if (r.status === 200 || r.status === 201) { it.complete = true; it.off = it.prog = size; }
-        else if (r.status === 308) it.off = it.prog = got(r);
-        else if (r.status === 404 || r.status === 410) { it.sess = null; it.off = it.prog = 0; }
-      }, function () {});
     }
     function attempt() {
       return step().catch(function (e) {
         if (++tries > 5 || navigator.onLine === false) throw e;
-        return delay(Math.min(30000, 1000 * Math.pow(2, tries))).then(resync).then(attempt);
+        it.prog = it.off; drawItem(it);
+        return delay(Math.min(30000, 1000 * Math.pow(2, tries))).then(attempt);
       });
     }
-    return resync().then(attempt);
+    return attempt();
   }
 
   /* ---------- page enhancements ---------- */
