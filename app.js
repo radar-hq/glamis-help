@@ -1,7 +1,7 @@
 /* Glamis Staff Help: unlocks the encrypted content bundle and renders it. */
 (function () {
   'use strict';
-  var VER = '6270d36425';
+  var VER = '5b2d150348';
   var K_KEY = 'gdrh.k', K_SALT = 'gdrh.s', K_LANG = 'gdrh.lang', K_CL = 'gdrh.cl.', K_NAME = 'gdrh.name', K_Q = 'gdrh.q';
   var GROUPS = ['checklist', 'handbook', 'howto', 'quickref'];
 
