@@ -1,7 +1,7 @@
 /* Glamis Staff Help: unlocks the encrypted content bundle and renders it. */
 (function () {
   'use strict';
-  var VER = '55bfe32983';
+  var VER = '2e5124703f';
   var K_KEY = 'gdrh.k', K_SALT = 'gdrh.s', K_LANG = 'gdrh.lang', K_CL = 'gdrh.cl.', K_NAME = 'gdrh.name', K_Q = 'gdrh.q';
   var GROUPS = ['checklist', 'handbook', 'howto', 'quickref'];
 
@@ -51,7 +51,7 @@
       dropBig: 'Too big (over 5 GB)', dropType: 'Not a photo or video', dropZero: 'Empty file',
       dropNeedName: 'Add your name first.', dropNeedFiles: 'Choose at least one photo or video first.',
       dropKeep: 'Uploading. Keep this page open until every file says Done.',
-      dropAll: 'All uploaded. Thanks!', dropSome: "Some files didn't upload. Check your signal and tap Retry.",
+      dropAll: 'All uploaded. Thanks!', dropMore: 'These are all uploaded. To send more, tap Choose photos or videos.', dropSome: "Some files didn't upload. Check your signal and tap Retry.",
       dropOff: "Uploads aren't set up on the site yet. Tell a manager."
     },
     es: {
@@ -99,7 +99,7 @@
       dropBig: 'Muy grande (más de 5 GB)', dropType: 'No es foto ni video', dropZero: 'Archivo vacío',
       dropNeedName: 'Primero escribe tu nombre.', dropNeedFiles: 'Primero elige al menos una foto o un video.',
       dropKeep: 'Subiendo. Deja esta página abierta hasta que cada archivo diga Listo.',
-      dropAll: 'Todo se subió. ¡Gracias!', dropSome: 'Algunos archivos no se subieron. Revisa tu señal y toca Reintentar.',
+      dropAll: 'Todo se subió. ¡Gracias!', dropMore: 'Ya se subieron todos. Para mandar más, toca Elegir fotos o videos.', dropSome: 'Algunos archivos no se subieron. Revisa tu señal y toca Reintentar.',
       dropOff: 'Las subidas todavía no están listas en el sitio. Avísale a un gerente.'
     }
   };
@@ -532,7 +532,7 @@
     }).join('') : '<li class="none">' + esc(t('dropEmpty')) + '</li>';
     DROP.items.forEach(drawItem);
     var go = $('[data-act=go]', box), fail = DROP.items.some(function (x) { return x.st === 'fail'; });
-    go.textContent = DROP.running ? t('dropUp') + '…' : t(fail ? 'dropRetry' : 'dropGo'); go.disabled = DROP.running;
+    go.textContent = DROP.running ? t('dropUp') + '…' : t(fail ? 'dropRetry' : 'dropGo'); go.disabled = DROP.running || (!fail && !DROP.items.some(function (x) { return x.st === 'wait'; }) && DROP.items.some(function (x) { return x.st === 'done'; }));
     $('[data-act=clr]', box).disabled = DROP.running;
     setMsg($('.msg', box), DROP.msg, DROP.bad);
   }
@@ -549,7 +549,10 @@
     var box = DROP.box; if (DROP.running || !box || !DATA || !DATA.drop) return;
     var nameEl = $('[name=dname]', box), nm = nameEl.value.trim();
     var todo = DROP.items.filter(function (x) { return x.st === 'wait' || x.st === 'fail'; });
-    if (!todo.length) { dropMsg(t('dropNeedFiles'), true); return; }
+    if (!todo.length) {
+      var allDone = DROP.items.some(function (x) { return x.st === 'done'; });
+      dropMsg(t(allDone ? 'dropMore' : 'dropNeedFiles'), !allDone); return;
+    }
     if (!nm) { dropMsg(t('dropNeedName'), true); nameEl.focus(); return; }
     try { localStorage.setItem(K_NAME, nm); } catch (e) {}
     DROP.running = true; DROP.who = nm; DROP.note = $('[name=dnote]', box).value.trim();
